@@ -25,11 +25,14 @@ import { pipeline } from 'node:stream/promises';
 
 import type * as containerDesktopAPI from '@podman-desktop/api';
 import type * as Dockerode from 'dockerode';
+import * as fzstd from 'fzstd';
 import type { HttpsOptions, OptionsOfTextResponseBody } from 'got';
 import got, { HTTPError, RequestError } from 'got';
 import { HttpProxyAgent, HttpsProxyAgent } from 'hpagent';
 import * as nodeTar from 'tar';
 import validator from 'validator';
+
+import type { ImageSearchOptions, ImageSearchResult } from '/@api/image-registry.js';
 
 import { isMac, isWindows } from '../util.js';
 import type { ApiSenderType } from './api.js';
@@ -80,6 +83,9 @@ export class ImageRegistry {
     });
 
     this.proxyEnabled = this.proxy.isEnabled();
+    if (this.proxyEnabled) {
+      this.proxySettings = this.proxy.proxy;
+    }
   }
 
   extractRegistryServerFromImage(imageName: string): string | undefined {
@@ -483,12 +489,28 @@ export class ImageRegistry {
     const manifest = await this.getManifest(imageData, token);
 
     // now, get all layers 'application/vnd.oci.image.layer.v1.tar+gzip' and download and expand them
-    const layers = manifest.layers.filter(
+    const gzipLayers = manifest.layers.filter(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (layer: any) =>
         layer.mediaType === 'application/vnd.oci.image.layer.v1.tar+gzip' ||
         layer.mediaType === 'application/vnd.docker.image.rootfs.diff.tar.gzip',
     );
+
+    const zstdLayers = manifest.layers.filter(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (layer: any) => layer.mediaType === 'application/vnd.oci.image.layer.v1.tar+zstd',
+    );
+
+    let layers: { digest: string; size: number; mediaType: string }[] = [];
+    if (zstdLayers.length > 0) {
+      // using zstd layers
+      layers = zstdLayers;
+    } else if (gzipLayers.length > 0) {
+      // using gzip layers
+      layers = gzipLayers;
+    } else {
+      throw new Error(`No gzip or zstd layers found for the image ${imageName}`);
+    }
 
     // total size of all layers
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -498,7 +520,20 @@ export class ImageRegistry {
     let currentDownloaded = 0;
     for (const layer of layers) {
       const layerDigest = layer.digest;
-      await this.fetchAndExtractLayer(imageData, layerDigest, destFolder, token, currentDownloaded, totalSize, logger);
+      let compressionType: 'gzip' | 'zstd' = 'gzip';
+      if (layer.mediaType === 'application/vnd.oci.image.layer.v1.tar+zstd') {
+        compressionType = 'zstd';
+      }
+      await this.fetchAndExtractLayer(
+        imageData,
+        layerDigest,
+        compressionType,
+        destFolder,
+        token,
+        currentDownloaded,
+        totalSize,
+        logger,
+      );
       currentDownloaded += layer.size;
     }
   }
@@ -506,6 +541,7 @@ export class ImageRegistry {
   protected async fetchAndExtractLayer(
     imageData: ImageRegistryNameTag,
     digest: string,
+    compressionType: 'gzip' | 'zstd',
     destFolder: string,
     token: string,
     currentDownloaded: number,
@@ -513,7 +549,7 @@ export class ImageRegistry {
     logger: (message: string) => void,
   ): Promise<void> {
     const options = this.getOptions();
-    options.headers = options.headers || {};
+    options.headers = options.headers ?? {};
 
     // add the Bearer token
     options.headers.Authorization = `Bearer ${token}`;
@@ -525,7 +561,8 @@ export class ImageRegistry {
       await fs.promises.mkdir(destFolder, { recursive: true });
     }
 
-    const tmpFileName = path.resolve(os.tmpdir(), `${digestWithoutSpecialChars}.tar`);
+    const suffix = compressionType === 'gzip' ? '.tar' : '.zst';
+    const tmpFileName = path.resolve(os.tmpdir(), `${digestWithoutSpecialChars}${suffix}`);
 
     // ensure the folder exists
     const parentDir = path.dirname(tmpFileName);
@@ -539,16 +576,30 @@ export class ImageRegistry {
 
     readStream.on('downloadProgress', ({ transferred }) => {
       const globalPercentage = Math.round(((transferred + currentDownloaded) / totalSize) * 100);
-      logger(`Downloading ${digest}.tar - ${globalPercentage}% - (${transferred + currentDownloaded}/${totalSize})`);
+      logger(
+        `Downloading ${digest}${suffix} - ${globalPercentage}% - (${transferred + currentDownloaded}/${totalSize})`,
+      );
     });
     await pipeline(readStream, createWriteStream(tmpFileName));
-    await nodeTar.extract({ file: tmpFileName, cwd: destFolder });
+    // in case of zstd, we need to unpack the file first
+    if (compressionType === 'zstd') {
+      //use fstd library to extract the file
+      const content = await fs.promises.readFile(tmpFileName);
+      const decompressed = fzstd.decompress(content);
+      const unpackedFileName = tmpFileName.replace('.zst', '.tar');
+      await fs.promises.writeFile(unpackedFileName, decompressed);
+      await nodeTar.extract({ file: unpackedFileName, cwd: destFolder });
+      // remove the temporary file
+      await fs.promises.rm(tmpFileName);
+    } else {
+      await nodeTar.extract({ file: tmpFileName, cwd: destFolder });
+    }
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   protected async fetchOciImageConfig(imageData: ImageRegistryNameTag, digest: string, token: string): Promise<any> {
     const options = this.getOptions();
-    options.headers = options.headers || {};
+    options.headers = options.headers ?? {};
     // add the Bearer token
     options.headers.Authorization = `Bearer ${token}`;
 
@@ -579,7 +630,7 @@ export class ImageRegistry {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ): Promise<any> {
     const options = this.getOptions();
-    options.headers = options.headers || {};
+    options.headers = options.headers ?? {};
 
     // add the Bearer token
     options.headers.Authorization = `Bearer ${token}`;
@@ -801,7 +852,7 @@ export class ImageRegistry {
     // if we have auth for this registry, add basic auth to the headers
     const authServer = this.getAuthconfigForServer(imageData.registry);
     if (authServer) {
-      options.headers = options.headers || {};
+      options.headers = options.headers ?? {};
       const loginAndPassWord = `${authServer.username}:${authServer.password}`;
       options.headers.Authorization = `Basic ${Buffer.from(loginAndPassWord).toString('base64')}`;
     }
@@ -871,6 +922,23 @@ export class ImageRegistry {
     if (!rawResponse?.includes('token')) {
       throw Error('Unable to validate provided credentials.');
     }
+  }
+
+  async searchImages(options: ImageSearchOptions): Promise<ImageSearchResult[]> {
+    if (!options.registry) {
+      options.registry = 'https://index.docker.io';
+    }
+    if (options.registry === 'docker.io') {
+      options.registry = 'index.docker.io';
+    }
+    if (!options.registry.startsWith('http')) {
+      options.registry = 'https://' + options.registry;
+    }
+    const resultJSON = await got.get(
+      `${options.registry}/v1/search?q=${options.query}&n=${options.limit ?? 25}`,
+      this.getOptions(),
+    );
+    return JSON.parse(resultJSON.body).results;
   }
 }
 

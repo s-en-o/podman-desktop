@@ -30,8 +30,11 @@ import type {
   V1Deployment,
   V1Ingress,
   V1NamespaceList,
+  V1Node,
+  V1PersistentVolumeClaim,
   V1Pod,
   V1PodList,
+  V1Secret,
   V1Service,
 } from '@kubernetes/client-node';
 import type * as containerDesktopAPI from '@podman-desktop/api';
@@ -57,8 +60,10 @@ import type { ExtensionInfo } from '/@api/extension-info';
 import type { HistoryInfo } from '/@api/history-info';
 import type { IconInfo } from '/@api/icon-info';
 import type { ImageCheckerInfo } from '/@api/image-checker-info';
+import type { ImageFilesInfo } from '/@api/image-files-info';
 import type { ImageInfo } from '/@api/image-info';
 import type { ImageInspectInfo } from '/@api/image-inspect-info';
+import type { ImageSearchOptions, ImageSearchResult } from '/@api/image-registry';
 import type { ManifestCreateOptions, ManifestInspectInfo } from '/@api/manifest-info';
 import type { NetworkInspectInfo } from '/@api/network-info';
 import type { NotificationCard, NotificationCardOptions } from '/@api/notification';
@@ -298,6 +303,9 @@ export function initExposure(): void {
       return ipcInvoke('container-provider-registry:inspectManifest', engine, manifestId);
     },
   );
+  contextBridge.exposeInMainWorld('removeManifest', async (engine: string, manifestId: string): Promise<void> => {
+    return ipcInvoke('container-provider-registry:removeManifest', engine, manifestId);
+  });
 
   /**
    * @deprecated This method is deprecated and will be removed in a future release.
@@ -1227,6 +1235,13 @@ export function initExposure(): void {
   );
 
   contextBridge.exposeInMainWorld(
+    'searchImageInRegistry',
+    async (options: ImageSearchOptions): Promise<ImageSearchResult[]> => {
+      return ipcInvoke('image-registry:searchImages', options);
+    },
+  );
+
+  contextBridge.exposeInMainWorld(
     'getAuthenticationProvidersInfo',
     async (): Promise<readonly AuthenticationProviderInfo[]> => {
       return ipcInvoke('authentication-provider-registry:getAuthenticationProvidersInfo');
@@ -1677,6 +1692,17 @@ export function initExposure(): void {
   );
 
   contextBridge.exposeInMainWorld(
+    'kubernetesReadNamespacedPersistentVolumeClaim',
+    async (name: string, namespace: string): Promise<V1PersistentVolumeClaim | undefined> => {
+      return ipcInvoke('kubernetes-client:readNamespacedPersistentVolumeClaim', name, namespace);
+    },
+  );
+
+  contextBridge.exposeInMainWorld('kubernetesReadNode', async (name: string): Promise<V1Node | undefined> => {
+    return ipcInvoke('kubernetes-client:readNode', name);
+  });
+
+  contextBridge.exposeInMainWorld(
     'kubernetesReadNamespacedIngress',
     async (name: string, namespace: string): Promise<V1Ingress | undefined> => {
       return ipcInvoke('kubernetes-client:readNamespacedIngress', name, namespace);
@@ -1700,6 +1726,12 @@ export function initExposure(): void {
     'kubernetesReadNamespacedConfigMap',
     async (name: string, namespace: string): Promise<V1ConfigMap | undefined> => {
       return ipcInvoke('kubernetes-client:readNamespacedConfigMap', name, namespace);
+    },
+  );
+  contextBridge.exposeInMainWorld(
+    'kubernetesReadNamespacedSecret',
+    async (name: string, namespace: string): Promise<V1Secret | undefined> => {
+      return ipcInvoke('kubernetes-client:readNamespacedSecret', name, namespace);
     },
   );
 
@@ -1773,6 +1805,18 @@ export function initExposure(): void {
     return ipcInvoke('kubernetes-client:deleteDeployment', name);
   });
 
+  contextBridge.exposeInMainWorld('kubernetesDeleteConfigMap', async (name: string): Promise<void> => {
+    return ipcInvoke('kubernetes-client:deleteConfigMap', name);
+  });
+
+  contextBridge.exposeInMainWorld('kubernetesDeleteSecret', async (name: string): Promise<void> => {
+    return ipcInvoke('kubernetes-client:deleteSecret', name);
+  });
+
+  contextBridge.exposeInMainWorld('kubernetesDeletePersistentVolumeClaim', async (name: string): Promise<void> => {
+    return ipcInvoke('kubernetes-client:deletePersistentVolumeClaim', name);
+  });
+
   contextBridge.exposeInMainWorld('kubernetesDeleteIngress', async (name: string): Promise<void> => {
     return ipcInvoke('kubernetes-client:deleteIngress', name);
   });
@@ -1839,6 +1883,10 @@ export function initExposure(): void {
       callback.onClose();
       onDataCallbacksShellInContainer.delete(kubernetesCallbackId);
     }
+  });
+
+  contextBridge.exposeInMainWorld('restartKubernetesPod', async (name: string): Promise<void> => {
+    return ipcInvoke('kubernetes-client:restartPod', name);
   });
 
   contextBridge.exposeInMainWorld(
@@ -2064,6 +2112,21 @@ export function initExposure(): void {
       cancellationToken?: number,
     ): Promise<containerDesktopAPI.ImageChecks | undefined> => {
       return ipcInvoke('image-checker:check', id, image, cancellationToken);
+    },
+  );
+
+  contextBridge.exposeInMainWorld('getImageFilesProviders', async (): Promise<ImageFilesInfo[]> => {
+    return ipcInvoke('image-files:getProviders');
+  });
+
+  contextBridge.exposeInMainWorld(
+    'imageGetFilesystemLayers',
+    async (
+      id: string,
+      image: containerDesktopAPI.ImageInfo,
+      cancellationToken?: number,
+    ): Promise<containerDesktopAPI.ImageFilesystemLayers | undefined> => {
+      return ipcInvoke('image-files:getFilesystemLayers', id, image, cancellationToken);
     },
   );
 

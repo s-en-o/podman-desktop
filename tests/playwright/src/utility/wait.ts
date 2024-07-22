@@ -16,6 +16,11 @@
  * SPDX-License-Identifier: Apache-2.0
  ***********************************************************************/
 
+import type { Page } from '@playwright/test';
+import { expect as playExpect } from '@playwright/test';
+
+import { NavigationBar } from '../model/workbench/navigation';
+
 export async function wait(
   waitFunction: () => Promise<boolean>,
   until: boolean,
@@ -55,10 +60,12 @@ export async function wait(
  */
 export async function waitUntil(
   waitFunction: () => Promise<boolean>,
-  timeout = 3000,
-  diff = 500,
-  sendError = true,
-  message = '',
+  {
+    timeout = 5000,
+    diff = 500,
+    sendError = true,
+    message = '',
+  }: { timeout?: number; diff?: number; sendError?: boolean; message?: string } = {},
 ): Promise<void> {
   await wait(waitFunction, true, timeout, diff, sendError, message);
 }
@@ -74,10 +81,12 @@ export async function waitUntil(
  */
 export async function waitWhile(
   waitFunction: () => Promise<boolean>,
-  timeout = 3000,
-  diff = 500,
-  sendError = true,
-  message = '',
+  {
+    timeout = 5000,
+    diff = 500,
+    sendError = true,
+    message = '',
+  }: { timeout?: number; diff?: number; sendError?: boolean; message?: string } = {},
 ): Promise<void> {
   await wait(waitFunction, false, timeout, diff, sendError, message);
 }
@@ -110,4 +119,14 @@ export async function executeWithTimeout(
     clearTimeout(cancelTimeout);
     return result;
   });
+}
+
+export async function waitForPodmanMachineStartup(page: Page, timeoutOut = 15000): Promise<void> {
+  const dashboardPage = await new NavigationBar(page).openDashboard();
+  await playExpect(dashboardPage.heading).toBeVisible();
+  await waitUntil(async () => await dashboardPage.podmanStatusLabel.isVisible(), {
+    timeout: timeoutOut,
+    sendError: false,
+  });
+  await playExpect(dashboardPage.podmanStatusLabel).toHaveText('RUNNING', { timeout: timeoutOut });
 }

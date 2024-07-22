@@ -52,8 +52,7 @@ test('Expect simple column styling with Ingress', async () => {
 
   const text = screen.getByText(ingressUI.name);
   expect(text).toBeInTheDocument();
-  expect(text).toHaveClass('text-sm');
-  expect(text).toHaveClass('text-gray-300');
+  expect(text).toHaveClass('text-[var(--pd-table-body-text-highlight)]');
 });
 
 test('Expect clicking on Ingress works', async () => {
@@ -75,8 +74,7 @@ test('Expect simple column styling with Route', async () => {
 
   const text = screen.getByText(routeUI.name);
   expect(text).toBeInTheDocument();
-  expect(text).toHaveClass('text-sm');
-  expect(text).toHaveClass('text-gray-300');
+  expect(text).toHaveClass('text-[var(--pd-table-body-text-highlight)]');
 });
 
 test('Expect clicking on Route works', async () => {
@@ -91,4 +89,11 @@ test('Expect clicking on Route works', async () => {
   fireEvent.click(text);
 
   expect(routerGotoSpy).toBeCalledWith('/ingressesRoutes/route/my-route/test-namespace/summary');
+});
+
+test('Expect to show namespace in column', async () => {
+  render(IngressRouteColumnName, { object: routeUI });
+
+  const text = screen.getByText(routeUI.namespace);
+  expect(text).toBeInTheDocument();
 });

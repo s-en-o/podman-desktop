@@ -18,6 +18,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import * as fs from 'node:fs';
+import { arch } from 'node:os';
 
 import type { Configuration, ContainerEngineInfo, ContainerProviderConnection } from '@podman-desktop/api';
 import * as extensionApi from '@podman-desktop/api';
@@ -34,7 +35,7 @@ import {
 } from './extension';
 import * as extension from './extension';
 import type { InstalledPodman } from './podman-cli';
-import { getPodmanCli } from './podman-cli';
+import * as podmanCli from './podman-cli';
 import { PodmanConfiguration } from './podman-configuration';
 import { PodmanInstall } from './podman-install';
 import { getAssetsFolder, isLinux, isMac, isWindows, LoggerDelegator } from './util';
@@ -64,17 +65,17 @@ const provider: extensionApi.Provider = {
   id: '',
   status: 'started',
   updateStatus: vi.fn(),
-  onDidUpdateStatus: undefined,
+  onDidUpdateStatus: vi.fn(),
   version: '',
   updateVersion: vi.fn(),
   onDidUpdateVersion: vi.fn(),
-  images: undefined,
+  images: {},
   links: [],
   detectionChecks: [],
   updateDetectionChecks: vi.fn(),
   warnings: [],
   updateWarnings: updateWarningsMock,
-  onDidUpdateDetectionChecks: undefined,
+  onDidUpdateDetectionChecks: vi.fn(),
 };
 
 const machineInfo: extension.MachineInfo = {
@@ -87,6 +88,8 @@ const machineInfo: extension.MachineInfo = {
   diskUsage: 0,
   memoryUsage: 0,
 };
+
+const podmanConfiguration = {} as unknown as PodmanConfiguration;
 
 const machineDefaultName = 'podman-machine-default';
 const machine1Name = 'podman-machine-1';
@@ -200,6 +203,18 @@ vi.mock('@podman-desktop/api', async () => {
   };
 });
 
+vi.mock('node:os', async () => {
+  // eslint-disable-next-line @typescript-eslint/consistent-type-imports
+  const osActual = await vi.importActual<typeof import('node:os')>('node:os');
+
+  return {
+    ...osActual,
+    release: vi.fn(),
+    platform: vi.fn(),
+    arch: vi.fn(),
+  };
+});
+
 vi.mock('./qemu-helper', async () => {
   return {
     QemuHelper: vi.fn().mockImplementation(() => {
@@ -289,7 +304,7 @@ test('verify create command called with correct values', async () => {
     undefined,
   );
   expect(spyExecPromise).toBeCalledWith(
-    getPodmanCli(),
+    podmanCli.getPodmanCli(),
     ['machine', 'init', '--cpus', '2', '--memory', '999', '--disk-size', '232', '--image-path', 'path', '--rootful'],
     {
       logger: undefined,
@@ -342,7 +357,7 @@ test('verify create command called with correct values with user mode networking
     '--rootful',
     '--user-mode-networking',
   ];
-  expect(spyExecPromise).toBeCalledWith(getPodmanCli(), parameters, {
+  expect(spyExecPromise).toBeCalledWith(podmanCli.getPodmanCli(), parameters, {
     logger: undefined,
   });
   expect(console.error).not.toBeCalled();
@@ -392,7 +407,7 @@ test('verify create command called with now flag if start machine after creation
     '--rootful',
     '--now',
   ];
-  expect(spyExecPromise).toBeCalledWith(getPodmanCli(), parameters, {
+  expect(spyExecPromise).toBeCalledWith(podmanCli.getPodmanCli(), parameters, {
     logger: undefined,
   });
   expect(console.error).not.toBeCalled();
@@ -454,7 +469,7 @@ test('verify create command called with embedded image if using podman v5', asyn
 
   expect(vi.mocked(extensionApi.process.exec)).toHaveBeenNthCalledWith(
     3,
-    getPodmanCli(),
+    podmanCli.getPodmanCli(),
     expect.arrayContaining([expect.stringContaining('.zst')]),
     expect.anything(),
   );
@@ -494,6 +509,44 @@ test('checkDefaultMachine: do not prompt if the running machine is already the d
     },
   ];
 
+  const fakeConnectionJSON: extension.ConnectionJSON[] = [
+    {
+      Name: machineDefaultName,
+      URI: 'uri',
+      Identity: 'id',
+      IsMachine: true,
+      Default: true,
+    },
+    {
+      Name: `${machineDefaultName}-root`,
+      URI: 'uri',
+      Identity: 'id',
+      IsMachine: true,
+      Default: false,
+    },
+    {
+      Name: machine1Name,
+      URI: 'uri',
+      Identity: 'id',
+      IsMachine: true,
+      Default: false,
+    },
+    {
+      Name: `${machine1Name}-root`,
+      URI: 'uri',
+      Identity: 'id',
+      IsMachine: true,
+      Default: false,
+    },
+  ];
+
+  vi.spyOn(extensionApi.process, 'exec').mockImplementation(
+    () =>
+      new Promise<extensionApi.RunResult>(resolve => {
+        resolve({ stdout: JSON.stringify(fakeConnectionJSON) } as extensionApi.RunResult);
+      }),
+  );
+
   await extension.checkDefaultMachine(fakeJSON);
   expect(extensionApi.window.showInformationMessage).not.toHaveBeenCalled();
 });
@@ -510,9 +563,9 @@ test('if a machine is successfully started it changes its state to started', asy
         resolve({} as extensionApi.RunResult);
       }),
   );
-  await extension.startMachine(provider, machineInfo);
+  await extension.startMachine(provider, podmanConfiguration, machineInfo);
 
-  expect(spyExecPromise).toBeCalledWith(getPodmanCli(), ['machine', 'start', 'name'], {
+  expect(spyExecPromise).toBeCalledWith(podmanCli.getPodmanCli(), ['machine', 'start', 'name'], {
     logger: new LoggerDelegator(),
   });
 
@@ -526,7 +579,7 @@ test('if a machine is successfully reporting telemetry', async () => {
         resolve({} as extensionApi.RunResult);
       }),
   );
-  await extension.startMachine(provider, machineInfo);
+  await extension.startMachine(provider, podmanConfiguration, machineInfo);
 
   // wait a call on telemetryLogger.logUsage
   while ((telemetryLogger.logUsage as Mock).mock.calls.length === 0) {
@@ -538,7 +591,7 @@ test('if a machine is successfully reporting telemetry', async () => {
     expect.objectContaining({ hostCpus: expect.anything() }),
   );
 
-  expect(spyExecPromise).toBeCalledWith(getPodmanCli(), ['machine', 'start', 'name'], expect.anything());
+  expect(spyExecPromise).toBeCalledWith(podmanCli.getPodmanCli(), ['machine', 'start', 'name'], expect.anything());
 });
 
 test('if a machine is successfully reporting an error in telemetry', async () => {
@@ -547,7 +600,7 @@ test('if a machine is successfully reporting an error in telemetry', async () =>
   const spyExecPromise = vi.spyOn(extensionApi.process, 'exec').mockImplementation(() => {
     throw customError;
   });
-  await expect(extension.startMachine(provider, machineInfo)).rejects.toThrow(customError.message);
+  await expect(extension.startMachine(provider, podmanConfiguration, machineInfo)).rejects.toThrow(customError.message);
 
   // wait a call on telemetryLogger.logUsage
   while ((telemetryLogger.logUsage as Mock).mock.calls.length === 0) {
@@ -559,7 +612,7 @@ test('if a machine is successfully reporting an error in telemetry', async () =>
     expect.objectContaining({ hostCpus: expect.anything(), error: customError }),
   );
 
-  expect(spyExecPromise).toBeCalledWith(getPodmanCli(), ['machine', 'start', 'name'], expect.anything());
+  expect(spyExecPromise).toBeCalledWith(podmanCli.getPodmanCli(), ['machine', 'start', 'name'], expect.anything());
 });
 
 test('if a machine failed to start with a generic error, this is thrown', async () => {
@@ -571,7 +624,7 @@ test('if a machine failed to start with a generic error, this is thrown', async 
       }),
   );
 
-  await expect(extension.startMachine(provider, machineInfo)).rejects.toThrow('generic error');
+  await expect(extension.startMachine(provider, podmanConfiguration, machineInfo)).rejects.toThrow('generic error');
   expect(console.error).toBeCalled();
 });
 
@@ -584,7 +637,7 @@ test('if a machine failed to start with a wsl distro not found error, the user i
       }),
   );
 
-  await expect(extension.startMachine(provider, machineInfo)).rejects.toThrow(
+  await expect(extension.startMachine(provider, podmanConfiguration, machineInfo)).rejects.toThrow(
     'wsl bootstrap script failed: exit status 0xffffffff',
   );
   expect(extensionApi.window.showInformationMessage).toBeCalledWith(
@@ -600,9 +653,9 @@ test('if a machine failed to start with a wsl distro not found error but the ski
   spyExecPromise.mockImplementation(() => {
     return Promise.reject(new Error('wsl bootstrap script failed: exit status 0xffffffff'));
   });
-  await expect(extension.startMachine(provider, machineInfo, undefined, undefined, true)).rejects.toThrow(
-    'wsl bootstrap script failed: exit status 0xffffffff',
-  );
+  await expect(
+    extension.startMachine(provider, podmanConfiguration, machineInfo, undefined, undefined, true),
+  ).rejects.toThrow('wsl bootstrap script failed: exit status 0xffffffff');
   expect(extensionApi.window.showInformationMessage).not.toHaveBeenCalled();
   expect(console.error).toBeCalled();
 });
@@ -741,13 +794,13 @@ test('test checkDefaultMachine - if user wants to change default machine, check 
 
   await extension.checkDefaultMachine(fakeMachineJSON);
 
-  expect(spyExecPromise).toHaveBeenCalledWith(getPodmanCli(), [
+  expect(spyExecPromise).toHaveBeenCalledWith(podmanCli.getPodmanCli(), [
     'system',
     'connection',
     'default',
     `${machineDefaultName}-root`,
   ]);
-  expect(inspectCall).toHaveBeenCalledWith(getPodmanCli(), ['machine', 'inspect', machineDefaultName]);
+  expect(inspectCall).toHaveBeenCalledWith(podmanCli.getPodmanCli(), ['machine', 'inspect', machineDefaultName]);
 });
 
 test('test checkDefaultMachine - if user wants to change machine, check that it only change the connection once if it is rootless', async () => {
@@ -784,8 +837,13 @@ test('test checkDefaultMachine - if user wants to change machine, check that it 
 
   await extension.checkDefaultMachine(fakeMachineJSON);
 
-  expect(spyExecPromise).toHaveBeenCalledWith(getPodmanCli(), ['system', 'connection', 'default', machineDefaultName]);
-  expect(inspectCall).toHaveBeenCalledWith(getPodmanCli(), ['machine', 'inspect', machineDefaultName]);
+  expect(spyExecPromise).toHaveBeenCalledWith(podmanCli.getPodmanCli(), [
+    'system',
+    'connection',
+    'default',
+    machineDefaultName,
+  ]);
+  expect(inspectCall).toHaveBeenCalledWith(podmanCli.getPodmanCli(), ['machine', 'inspect', machineDefaultName]);
 });
 
 test('test checkDefaultMachine - if user wants to change machine, check that it only changes to rootless as machine inspect is not returning Rootful field (old versions of podman)', async () => {
@@ -815,8 +873,70 @@ test('test checkDefaultMachine - if user wants to change machine, check that it 
 
   await extension.checkDefaultMachine(fakeMachineJSON);
 
-  expect(spyExecPromise).toHaveBeenCalledWith(getPodmanCli(), ['system', 'connection', 'default', machineDefaultName]);
-  expect(inspectCall).toHaveBeenCalledWith(getPodmanCli(), ['machine', 'inspect', machineDefaultName]);
+  expect(spyExecPromise).toHaveBeenCalledWith(podmanCli.getPodmanCli(), [
+    'system',
+    'connection',
+    'default',
+    machineDefaultName,
+  ]);
+  expect(inspectCall).toHaveBeenCalledWith(podmanCli.getPodmanCli(), ['machine', 'inspect', machineDefaultName]);
+});
+
+test('test checkDefaultMachine, if the default connection is not in sync with the default machine, the function will prompt', async () => {
+  const fakeConnectionJSON: extension.ConnectionJSON[] = [
+    {
+      Name: machineDefaultName,
+      URI: 'uri',
+      Identity: 'id',
+      IsMachine: true,
+      Default: true,
+    },
+    {
+      Name: `${machineDefaultName}-root`,
+      URI: 'uri',
+      Identity: 'id',
+      IsMachine: true,
+      Default: false,
+    },
+  ];
+
+  const fakeMachineJSON = [
+    {
+      Name: machineDefaultName,
+      CPUs: 2,
+      Memory: '1048000000',
+      DiskSize: '250000000000',
+      Running: true,
+      Starting: false,
+      Default: true,
+    },
+  ];
+
+  vi.spyOn(extensionApi.process, 'exec').mockImplementation(
+    (_command, args) =>
+      new Promise<extensionApi.RunResult>(resolve => {
+        if (args?.[0] === 'machine' && args?.[1] === 'list') {
+          resolve({ stdout: JSON.stringify([fakeMachineJSON[0]]) } as extensionApi.RunResult);
+        } else if (args?.[0] === 'machine' && args?.[1] === 'inspect') {
+          resolve({
+            stdout: JSON.stringify([{ Name: fakeMachineJSON[0].Name, Rootful: true }]),
+          } as extensionApi.RunResult);
+        } else if (args?.[0] === 'system' && args?.[1] === 'connection' && args?.[2] === 'list') {
+          resolve({
+            stdout: JSON.stringify(fakeConnectionJSON),
+          } as extensionApi.RunResult);
+        }
+      }),
+  );
+
+  await extension.checkDefaultMachine(fakeMachineJSON);
+
+  expect(extensionApi.window.showInformationMessage).toBeCalledWith(
+    `Rootful Podman Machine '${machineDefaultName}' does not match default connection. This will cause podman CLI errors while trying to connect to '${machineDefaultName}'. Do you want to update the default connection?`,
+    'Yes',
+    'Ignore',
+    'Cancel',
+  );
 });
 
 test('handlecompatibilitymodesetting: enable called when configuration setting has been set to true', async () => {
@@ -919,82 +1039,83 @@ test('handlecompatibilitymodesetting: disable compatibility called when configur
 });
 
 test('ensure started machine reports default configuration', async () => {
-  extension.initExtensionContext({ subscriptions: [] } as extensionApi.ExtensionContext);
+  vi.mocked(isLinux).mockReturnValue(true);
+  extension.initExtensionContext({ subscriptions: [] } as unknown as extensionApi.ExtensionContext);
   vi.spyOn(extensionApi.process, 'exec').mockImplementation(
     (_command, args) =>
       new Promise<extensionApi.RunResult>(resolve => {
-        if (args[0] === 'machine' && args[1] === 'list') {
+        if (args?.[0] === 'machine' && args?.[1] === 'list') {
           resolve({ stdout: JSON.stringify([fakeMachineJSON[0]]) } as extensionApi.RunResult);
-        } else if (args[0] === 'machine' && args[1] === 'inspect') {
+        } else if (args?.[0] === 'machine' && args?.[1] === 'inspect') {
           resolve({} as extensionApi.RunResult);
-        } else if (args[0] === 'system' && args[1] === 'connection' && args[2] === 'list') {
+        } else if (args?.[0] === 'system' && args?.[1] === 'connection' && args?.[2] === 'list') {
           resolve({
             stdout: JSON.stringify([{ Name: fakeMachineJSON[0].Name, Default: true }]),
           } as extensionApi.RunResult);
-        } else if (args[0] === '--version') {
+        } else if (args?.[0] === '--version') {
           resolve({ stdout: 'podman version 4.9.0' } as extensionApi.RunResult);
         }
       }),
   );
 
-  await extension.updateMachines(provider);
-  expect(config.update).toBeCalledWith('machine.cpus', fakeMachineJSON[0].CPUs);
-  expect(config.update).toBeCalledWith('machine.memory', Number(fakeMachineJSON[0].Memory));
-  expect(config.update).toBeCalledWith('machine.diskSize', Number(fakeMachineJSON[0].DiskSize));
-  expect(config.update).toBeCalledWith('machine.cpusUsage', 0);
-  expect(config.update).toBeCalledWith('machine.memoryUsage', 0);
-  expect(config.update).toBeCalledWith('machine.diskSizeUsage', 0);
+  await extension.updateMachines(provider, podmanConfiguration);
+  expect(config.update).toHaveBeenNthCalledWith(1, 'machine.cpus', fakeMachineJSON[0].CPUs);
+  expect(config.update).toHaveBeenNthCalledWith(2, 'machine.memory', Number(fakeMachineJSON[0].Memory));
+  expect(config.update).toHaveBeenNthCalledWith(3, 'machine.diskSize', Number(fakeMachineJSON[0].DiskSize));
+  expect(config.update).toHaveBeenNthCalledWith(4, 'machine.cpusUsage', 0);
+  expect(config.update).toHaveBeenNthCalledWith(5, 'machine.memoryUsage', 0);
+  expect(config.update).toHaveBeenNthCalledWith(6, 'machine.diskSizeUsage', 0);
 });
 
 test('ensure stopped machine reports stopped provider', async () => {
-  extension.initExtensionContext({ subscriptions: [] } as extensionApi.ExtensionContext);
+  extension.initExtensionContext({ subscriptions: [] } as unknown as extensionApi.ExtensionContext);
   vi.mocked(isLinux).mockReturnValue(false);
   vi.mocked(isMac).mockReturnValue(true);
   vi.spyOn(extensionApi.process, 'exec').mockImplementation(
     (_command, args) =>
       new Promise<extensionApi.RunResult>(resolve => {
-        if (args[0] === 'machine' && args[1] === 'list') {
+        if (args?.[0] === 'machine' && args?.[1] === 'list') {
           const fakeStoppedMachine = JSON.parse(JSON.stringify(fakeMachineJSON[0]));
           fakeStoppedMachine.Running = false;
 
           resolve({ stdout: JSON.stringify([fakeStoppedMachine]) } as extensionApi.RunResult);
-        } else if (args[0] === 'machine' && args[1] === 'inspect') {
+        } else if (args?.[0] === 'machine' && args?.[1] === 'inspect') {
           resolve({} as extensionApi.RunResult);
-        } else if (args[0] === 'system' && args[1] === 'connection' && args[2] === 'list') {
+        } else if (args?.[0] === 'system' && args?.[1] === 'connection' && args?.[2] === 'list') {
           resolve({
             stdout: JSON.stringify([{ Name: fakeMachineJSON[0].Name, Default: true }]),
           } as extensionApi.RunResult);
-        } else if (args[0] === '--version') {
+        } else if (args?.[0] === '--version') {
           resolve({ stdout: 'podman version 4.9.0' } as extensionApi.RunResult);
         }
       }),
   );
 
-  await extension.updateMachines(provider);
+  await extension.updateMachines(provider, podmanConfiguration);
 
   expect(provider.updateStatus).toBeCalledWith('configured');
 });
 
 test('ensure started machine reports configuration', async () => {
-  extension.initExtensionContext({ subscriptions: [] } as extensionApi.ExtensionContext);
+  extension.initExtensionContext({ subscriptions: [] } as unknown as extensionApi.ExtensionContext);
   vi.spyOn(extensionApi.process, 'exec').mockImplementation(
     (_command, args) =>
       new Promise<extensionApi.RunResult>(resolve => {
-        if (args[0] === 'machine' && args[1] === 'list') {
+        if (args?.[0] === 'machine' && args?.[1] === 'list') {
           resolve({ stdout: JSON.stringify([fakeMachineJSON[0]]) } as extensionApi.RunResult);
-        } else if (args[0] === 'machine' && args[1] === 'inspect') {
-          resolve({} as extensionApi.RunResult);
-        } else if (args[0] === 'system' && args[1] === 'connection' && args[2] === 'list') {
+        } else if (args?.[0] === 'machine' && args?.[1] === 'inspect') {
+          resolve({ stdout: JSON.stringify([{ Name: fakeMachineJSON[0].Name }]) } as unknown as extensionApi.RunResult);
+        } else if (args?.[0] === 'system' && args?.[1] === 'connection' && args?.[2] === 'list') {
           resolve({
             stdout: JSON.stringify([{ Name: fakeMachineJSON[0].Name, Default: true }]),
           } as extensionApi.RunResult);
-        } else if (args[0] === '--version') {
+        } else if (args?.[0] === '--version') {
           resolve({ stdout: 'podman version 4.9.0' } as extensionApi.RunResult);
         }
       }),
   );
 
-  await extension.updateMachines(provider);
+  await extension.updateMachines(provider, podmanConfiguration);
   (extensionApi.containerEngine.info as Mock).mockResolvedValue({
     cpus: 2,
     cpuIdle: 99,
@@ -1003,7 +1124,7 @@ test('ensure started machine reports configuration', async () => {
     diskSize: 250000000000,
     diskUsed: 50000000000,
   } as ContainerEngineInfo);
-  await extension.updateMachines(provider);
+  await extension.updateMachines(provider, podmanConfiguration);
   expect(config.update).toBeCalledWith('machine.cpus', fakeMachineJSON[0].CPUs);
   expect(config.update).toBeCalledWith('machine.memory', Number(fakeMachineJSON[0].Memory));
   expect(config.update).toBeCalledWith('machine.diskSize', Number(fakeMachineJSON[0].DiskSize));
@@ -1013,25 +1134,26 @@ test('ensure started machine reports configuration', async () => {
 });
 
 test('ensure stopped machine reports configuration', async () => {
-  extension.initExtensionContext({ subscriptions: [] } as extensionApi.ExtensionContext);
+  extension.initExtensionContext({ subscriptions: [] } as unknown as extensionApi.ExtensionContext);
+  vi.mocked(isLinux).mockReturnValue(true);
   vi.spyOn(extensionApi.process, 'exec').mockImplementation(
     (_command, args) =>
       new Promise<extensionApi.RunResult>(resolve => {
-        if (args[0] === 'machine' && args[1] === 'list') {
+        if (args?.[0] === 'machine' && args?.[1] === 'list') {
           resolve({ stdout: JSON.stringify([fakeMachineJSON[1]]) } as extensionApi.RunResult);
-        } else if (args[0] === 'machine' && args[1] === 'inspect') {
+        } else if (args?.[0] === 'machine' && args?.[1] === 'inspect') {
           resolve({} as extensionApi.RunResult);
-        } else if (args[0] === 'system' && args[1] === 'connection' && args[2] === 'list') {
+        } else if (args?.[0] === 'system' && args?.[1] === 'connection' && args?.[2] === 'list') {
           resolve({
             stdout: JSON.stringify([{ Name: fakeMachineJSON[1].Name, Default: true }]),
           } as extensionApi.RunResult);
-        } else if (args[0] === '--version') {
+        } else if (args?.[0] === '--version') {
           resolve({ stdout: 'podman version 4.9.0' } as extensionApi.RunResult);
         }
       }),
   );
 
-  await extension.updateMachines(provider);
+  await extension.updateMachines(provider, podmanConfiguration);
   expect(config.update).toBeCalledWith('machine.cpus', fakeMachineJSON[0].CPUs);
   expect(config.update).toBeCalledWith('machine.memory', Number(fakeMachineJSON[0].Memory));
   expect(config.update).toBeCalledWith('machine.diskSize', Number(fakeMachineJSON[0].DiskSize));
@@ -1042,19 +1164,19 @@ test('ensure stopped machine reports configuration', async () => {
 
 test('ensure showNotification is not called during update', async () => {
   const showNotificationMock = vi.spyOn(extensionApi.window, 'showNotification');
-  extension.initExtensionContext({ subscriptions: [] } as extensionApi.ExtensionContext);
+  extension.initExtensionContext({ subscriptions: [] } as unknown as extensionApi.ExtensionContext);
   vi.spyOn(extensionApi.process, 'exec').mockImplementation(
     (_command, args) =>
       new Promise<extensionApi.RunResult>((resolve, reject) => {
-        if (args[0] === 'machine' && args[1] === 'list') {
+        if (args?.[0] === 'machine' && args?.[1] === 'list') {
           reject(new Error('error'));
         }
       }),
   );
 
-  const extensionContext = { subscriptions: [], storagePath: '' } as extensionApi.ExtensionContext;
+  const extensionContext = { subscriptions: [], storagePath: '' } as unknown as extensionApi.ExtensionContext;
   const podmanInstall: PodmanInstall = new PodmanInstall(extensionContext);
-  vi.spyOn(podmanInstall, 'checkForUpdate').mockImplementation((_installedPodman: InstalledPodman) => {
+  vi.spyOn(podmanInstall, 'checkForUpdate').mockImplementation((_installedPodman: InstalledPodman | undefined) => {
     return Promise.resolve({
       hasUpdate: true,
       bundledVersion: 'v1.2',
@@ -1067,7 +1189,7 @@ test('ensure showNotification is not called during update', async () => {
     },
   );
 
-  let updater: extensionApi.ProviderUpdate;
+  let updater: extensionApi.ProviderUpdate | undefined;
   registerUpdateMock.mockImplementation((update: extensionApi.ProviderUpdate) => {
     updater = update;
   });
@@ -1081,19 +1203,19 @@ test('ensure showNotification is not called during update', async () => {
 
   // check updater is registered
   expect(updater).toBeDefined();
-  expect(updater.version).equal('v1.2');
+  expect(updater?.version).equal('v1.2');
 
   // run the updater (it will sleep for 500ms before returning and resetting the shouldNotifySetup flag
   // run the updateMachine which should not call the showNotification func because shouldNotifySetup is false
-  updater.update(undefined).catch(() => {});
-  await expect(extension.updateMachines(provider)).rejects.toThrow('error');
+  updater?.update({} as extensionApi.Logger).catch(() => {});
+  await expect(extension.updateMachines(provider, podmanConfiguration)).rejects.toThrow('error');
 
   expect(showNotificationMock).not.toBeCalled();
 
   // wait 500ms so that the updater is complete and shouldNotifySetup reset. Call again the updateMachines func, this time the showNotification is called
   // as there is no update in progress
   await new Promise(resolve => setTimeout(resolve, 500));
-  await expect(extension.updateMachines(provider)).rejects.toThrow('error');
+  await expect(extension.updateMachines(provider, podmanConfiguration)).rejects.toThrow('error');
 
   expect(showNotificationMock).toBeCalled();
 });
@@ -1101,56 +1223,56 @@ test('ensure showNotification is not called during update', async () => {
 test('provider is registered with edit capabilities on MacOS', async () => {
   // Mock platform to be darwin
   vi.mocked(isMac).mockReturnValue(true);
-  extension.initExtensionContext({ subscriptions: [] } as extensionApi.ExtensionContext);
+  extension.initExtensionContext({ subscriptions: [] } as unknown as extensionApi.ExtensionContext);
   const spyExecPromise = vi.spyOn(extensionApi.process, 'exec');
   spyExecPromise.mockImplementation(() => {
     return Promise.reject(new Error('wsl bootstrap script failed: exit status 0xffffffff'));
   });
-  let registeredConnection: ContainerProviderConnection;
+  let registeredConnection: ContainerProviderConnection | undefined;
   vi.mocked(provider.registerContainerProviderConnection).mockImplementation(connection => {
     registeredConnection = connection;
     return Disposable.from({ dispose: () => {} });
   });
-  await extension.registerProviderFor(provider, machineInfo, undefined);
+  await extension.registerProviderFor(provider, podmanConfiguration, machineInfo, 'socket');
   expect(registeredConnection).toBeDefined();
-  expect(registeredConnection.lifecycle).toBeDefined();
-  expect(registeredConnection.lifecycle.edit).toBeDefined();
+  expect(registeredConnection?.lifecycle).toBeDefined();
+  expect(registeredConnection?.lifecycle?.edit).toBeDefined();
 });
 
 test('provider is registered without edit capabilities on Windows', async () => {
   vi.mocked(isMac).mockReturnValue(false);
-  extension.initExtensionContext({ subscriptions: [] } as extensionApi.ExtensionContext);
+  extension.initExtensionContext({ subscriptions: [] } as unknown as extensionApi.ExtensionContext);
   const spyExecPromise = vi.spyOn(extensionApi.process, 'exec');
   spyExecPromise.mockImplementation(() => {
     return Promise.reject(new Error('wsl bootstrap script failed: exit status 0xffffffff'));
   });
-  let registeredConnection: ContainerProviderConnection;
+  let registeredConnection: ContainerProviderConnection | undefined;
   vi.mocked(provider.registerContainerProviderConnection).mockImplementation(connection => {
     registeredConnection = connection;
     return Disposable.from({ dispose: () => {} });
   });
-  await extension.registerProviderFor(provider, machineInfo, undefined);
+  await extension.registerProviderFor(provider, podmanConfiguration, machineInfo, 'socket');
   expect(registeredConnection).toBeDefined();
-  expect(registeredConnection.lifecycle).toBeDefined();
-  expect(registeredConnection.lifecycle.edit).toBeUndefined();
+  expect(registeredConnection?.lifecycle).toBeDefined();
+  expect(registeredConnection?.lifecycle?.edit).toBeUndefined();
 });
 
 test('provider is registered without edit capabilities on Linux', async () => {
   vi.mocked(isLinux).mockReturnValue(true);
-  extension.initExtensionContext({ subscriptions: [] } as extensionApi.ExtensionContext);
+  extension.initExtensionContext({ subscriptions: [] } as unknown as extensionApi.ExtensionContext);
   const spyExecPromise = vi.spyOn(extensionApi.process, 'exec');
   spyExecPromise.mockImplementation(() => {
     return Promise.reject(new Error('wsl bootstrap script failed: exit status 0xffffffff'));
   });
-  let registeredConnection: ContainerProviderConnection;
+  let registeredConnection: ContainerProviderConnection | undefined;
   vi.mocked(provider.registerContainerProviderConnection).mockImplementation(connection => {
     registeredConnection = connection;
     return Disposable.from({ dispose: () => {} });
   });
-  await extension.registerProviderFor(provider, machineInfo, undefined);
+  await extension.registerProviderFor(provider, podmanConfiguration, machineInfo, 'socket');
   expect(registeredConnection).toBeDefined();
-  expect(registeredConnection.lifecycle).toBeDefined();
-  expect(registeredConnection.lifecycle.edit).toBeUndefined();
+  expect(registeredConnection?.lifecycle).toBeDefined();
+  expect(registeredConnection?.lifecycle?.edit).toBeUndefined();
 });
 
 test('checkDisguisedPodmanSocket: does not run updateWarnings when called with Linux', async () => {
@@ -1172,7 +1294,7 @@ test('Even with getJSONMachineList erroring, do not show setup notification on L
     message: 'description',
     stderr: 'error',
   });
-  await expect(extension.updateMachines(provider)).rejects.toThrow('description');
+  await expect(extension.updateMachines(provider, podmanConfiguration)).rejects.toThrow('description');
   expect(extensionApi.window.showNotification).not.toBeCalled();
 });
 
@@ -1180,14 +1302,14 @@ test('If machine list is empty, do not show setup notification on Linux', async 
   vi.mocked(isLinux).mockReturnValue(true);
   const spyExecPromise = vi.spyOn(extensionApi.process, 'exec');
   spyExecPromise.mockResolvedValue({ stdout: '[]' } as extensionApi.RunResult);
-  await extension.updateMachines(provider);
+  await extension.updateMachines(provider, podmanConfiguration);
   expect(extensionApi.window.showNotification).not.toBeCalled();
 });
 
 test('if there are no machines, make sure checkDefaultMachine is not being ran inside updateMachines', async () => {
   const spyCheckDefaultMachine = vi.spyOn(extension, 'checkDefaultMachine');
   vi.spyOn(extensionApi.process, 'exec').mockResolvedValue({ stdout: '[]' } as extensionApi.RunResult);
-  await extension.updateMachines(provider);
+  await extension.updateMachines(provider, podmanConfiguration);
   expect(spyCheckDefaultMachine).not.toBeCalled();
 });
 
@@ -1198,7 +1320,7 @@ test('Should notify clean machine if getJSONMachineList is erroring due to an in
     message: 'description',
     stderr: 'cannot unmarshal string',
   });
-  await expect(extension.updateMachines(provider)).rejects.toThrow('description');
+  await expect(extension.updateMachines(provider, podmanConfiguration)).rejects.toThrow('description');
   expect(extensionApi.window.showNotification).toBeCalled();
   expect(extensionApi.context.setValue).toBeCalledWith(extension.CLEANUP_REQUIRED_MACHINE_KEY, true);
 });
@@ -1303,7 +1425,7 @@ describe('initCheckAndRegisterUpdate', () => {
     });
 
     // mock the event
-    let listener: (event: extensionApi.RegisterContainerConnectionEvent) => void;
+    let listener: ((event: extensionApi.RegisterContainerConnectionEvent) => void) | undefined;
 
     vi.mocked(extensionApi.provider.onDidRegisterContainerConnection).mockImplementation(func => {
       listener = func;
@@ -1342,7 +1464,7 @@ describe('initCheckAndRegisterUpdate', () => {
 
     expect(listener).toBeDefined();
     // call listener
-    listener(event);
+    listener?.(event);
 
     // check that registerUpdateMock is not called as there is no update available from 4.0 to 5.0 as there is a machine
     expect(registerUpdateMock).not.toBeCalled();
@@ -1353,20 +1475,15 @@ describe('initCheckAndRegisterUpdate', () => {
 
   test('check update appear after updating the version', async () => {
     const podmanInstall = {
-      checkForUpdate: vi.fn(),
+      checkForUpdate: vi
+        .fn()
+        .mockResolvedValue({ installedVersion: undefined, hasUpdate: false, bundledVersion: undefined }),
     } as unknown as PodmanInstall;
 
     // disposable
     const disposeMock = vi.fn();
     registerUpdateMock.mockReturnValue({
       dispose: disposeMock,
-    });
-
-    // First call, no version being installed
-    vi.mocked(podmanInstall.checkForUpdate).mockResolvedValueOnce({
-      hasUpdate: false,
-      installedVersion: undefined,
-      bundledVersion: undefined,
     });
 
     let func: any;
@@ -1394,7 +1511,6 @@ describe('initCheckAndRegisterUpdate', () => {
     vi.mocked(extensionApi.process.exec).mockResolvedValueOnce({
       stdout: 'podman version 4.0',
     } as unknown as extensionApi.RunResult);
-
     // call the updateVersion
     await func();
 
@@ -1847,5 +1963,86 @@ describe('calcPodmanMachineSetting', () => {
     expect(extensionApi.context.setValue).toBeCalledWith(extension.PODMAN_MACHINE_CPU_SUPPORTED_KEY, false);
     expect(extensionApi.context.setValue).toBeCalledWith(extension.PODMAN_MACHINE_MEMORY_SUPPORTED_KEY, false);
     expect(extensionApi.context.setValue).toBeCalledWith(extension.PODMAN_MACHINE_DISK_SUPPORTED_KEY, false);
+  });
+});
+
+test('checkForUpdate func should be called if there is no podman installed', async () => {
+  const extensionContext = { subscriptions: [], storagePath: '' } as unknown as extensionApi.ExtensionContext;
+  const podmanInstall: PodmanInstall = new PodmanInstall(extensionContext);
+
+  vi.spyOn(podmanCli, 'getPodmanInstallation').mockResolvedValue(undefined);
+  vi.spyOn(podmanInstall, 'checkForUpdate').mockResolvedValue({
+    installedVersion: undefined,
+    hasUpdate: false,
+    bundledVersion: undefined,
+  });
+
+  await extension.initCheckAndRegisterUpdate(provider, podmanInstall);
+  expect(podmanInstall.checkForUpdate).toBeCalledWith(undefined);
+});
+
+describe('checkRosettaMacArm', async () => {
+  const podmanConfiguration = {
+    isRosettaEnabled: vi.fn(),
+  } as unknown as PodmanConfiguration;
+
+  test('check do nothing on non-macOS', async () => {
+    vi.mocked(isMac).mockReturnValue(false);
+    await extension.checkRosettaMacArm(podmanConfiguration);
+    // not called as not on macOS
+    expect(vi.mocked(podmanConfiguration.isRosettaEnabled)).not.toBeCalled();
+  });
+
+  test('check do nothing on macOS with intel', async () => {
+    vi.mocked(isMac).mockReturnValue(true);
+    vi.mocked(arch).mockReturnValue('x64');
+    await extension.checkRosettaMacArm(podmanConfiguration);
+    // not called as not on arm64
+    expect(vi.mocked(podmanConfiguration.isRosettaEnabled)).not.toBeCalled();
+  });
+
+  test('check no dialog on macOS with arm64 if rosetta is working', async () => {
+    vi.mocked(isMac).mockReturnValue(true);
+    vi.mocked(arch).mockReturnValue('arm64');
+    // rosetta is being enabled per configuration
+    vi.mocked(podmanConfiguration.isRosettaEnabled).mockResolvedValue(true);
+
+    // mock rosetta is working when executing commands
+    vi.mocked(extensionApi.process.exec).mockResolvedValue({} as extensionApi.RunResult);
+
+    await extension.checkRosettaMacArm(podmanConfiguration);
+    // check showInformationMessage is not called
+    expect(extensionApi.process.exec).toBeCalled();
+    expect(podmanConfiguration.isRosettaEnabled).toBeCalled();
+    expect(extensionApi.window.showInformationMessage).not.toBeCalled();
+  });
+
+  test('check no dialog on macOS with arm64 if rosetta is not enabled', async () => {
+    vi.mocked(isMac).mockReturnValue(true);
+    vi.mocked(arch).mockReturnValue('arm64');
+    // rosetta is being enabled per configuration
+    vi.mocked(podmanConfiguration.isRosettaEnabled).mockResolvedValue(false);
+
+    await extension.checkRosettaMacArm(podmanConfiguration);
+    // do not try to execute something as disabled
+    expect(extensionApi.process.exec).not.toBeCalled();
+    expect(podmanConfiguration.isRosettaEnabled).toBeCalled();
+    expect(extensionApi.window.showInformationMessage).not.toBeCalled();
+  });
+
+  test('check dialog on macOS with arm64 if rosetta is not working', async () => {
+    vi.mocked(isMac).mockReturnValue(true);
+    vi.mocked(arch).mockReturnValue('arm64');
+    // rosetta is being enabled per configuration
+    vi.mocked(podmanConfiguration.isRosettaEnabled).mockResolvedValue(true);
+
+    // mock rosetta is not working when executing commands
+    vi.mocked(extensionApi.process.exec).mockRejectedValue({ stderr: 'Bad CPU' } as extensionApi.RunError);
+
+    await extension.checkRosettaMacArm(podmanConfiguration);
+    // check showInformationMessage is not called
+    expect(extensionApi.process.exec).toBeCalled();
+    expect(podmanConfiguration.isRosettaEnabled).toBeCalled();
+    expect(extensionApi.window.showInformationMessage).toBeCalled();
   });
 });

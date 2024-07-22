@@ -18,11 +18,13 @@
 
 import type { Page } from '@playwright/test';
 import { expect as playExpect } from '@playwright/test';
+import type { TaskResult } from 'vitest';
 
 import { RegistriesPage } from '../model/pages/registries-page';
 import { ResourcesPage } from '../model/pages/resources-page';
 import { ResourcesPodmanConnections } from '../model/pages/resources-podman-connections-page';
 import { NavigationBar } from '../model/workbench/navigation';
+import type { PodmanDesktopRunner } from '../runner/podman-desktop-runner';
 import { waitUntil, waitWhile } from './wait';
 
 /**
@@ -39,13 +41,9 @@ export async function deleteContainer(page: Page, name: string): Promise<void> {
     console.log(`container '${name}' does not exist, skipping...`);
   } else {
     // stop container first, might not be running
-    try {
-      const stopButton = container.getByRole('button').and(container.getByLabel('Stop Container'));
-      await stopButton.waitFor({ state: 'visible', timeout: 2000 });
-      await stopButton.click();
-    } catch (error) {
-      // omit the exception
-    }
+    const stopButton = container.getByRole('button').and(container.getByLabel('Stop Container'));
+    if ((await stopButton.count()) > 0) await stopButton.click();
+
     // delete the container
     const deleteButton = container.getByRole('button').and(container.getByLabel('Delete Container'));
     await deleteButton.click();
@@ -53,10 +51,7 @@ export async function deleteContainer(page: Page, name: string): Promise<void> {
     // wait for container to disappear
     try {
       console.log('Waiting for container to get deleted ...');
-      await waitWhile(async () => {
-        const result = await containers.getContainerRowByName(name);
-        return !!result;
-      }, 5000);
+      await playExpect.poll(async () => await containers.getContainerRowByName(name), { timeout: 10000 }).toBeFalsy();
     } catch (error) {
       if (!(error as Error).message.includes('Page is empty')) {
         throw Error(`Error waiting for container '${name}' to get removed, ${error}`);
@@ -93,9 +88,7 @@ export async function deleteImage(page: Page, name: string): Promise<void> {
           const result = await images.getImageRowByName(name);
           return !!result;
         },
-        10000,
-        1000,
-        false,
+        { timeout: 10000, sendError: false },
       );
     } catch (error) {
       if (!(error as Error).message.includes('Page is empty')) {
@@ -110,7 +103,7 @@ export async function deleteRegistry(page: Page, name: string, failIfNotExist = 
   const settingsBar = await navigationBar.openSettings();
   const registryPage = await settingsBar.openTabPage(RegistriesPage);
   const registryRecord = await registryPage.getRegistryRowByName(name);
-  await waitUntil(() => registryRecord.isVisible(), 3000, 500, failIfNotExist);
+  await waitUntil(() => registryRecord.isVisible(), { sendError: failIfNotExist });
   if (await registryRecord.isVisible()) {
     // it might be that the record exist but there are no credentials -> it is default registry and it is empty
     // or if there is a kebab memu available
@@ -137,9 +130,12 @@ export async function deletePod(page: Page, name: string): Promise<void> {
     // wait for pod to disappear
     try {
       console.log('Waiting for pod to get deleted ...');
-      await waitWhile(async () => {
-        return !!(await pods.getPodRowByName(name));
-      }, 20000);
+      await waitWhile(
+        async () => {
+          return !!(await pods.getPodRowByName(name));
+        },
+        { timeout: 20000 },
+      );
     } catch (error) {
       if (!(error as Error).message.includes('Page is empty')) {
         throw Error(`Error waiting for pod '${name}' to get removed, ${error}`);
@@ -153,11 +149,15 @@ export async function handleConfirmationDialog(
   page: Page,
   dialogTitle = 'Confirmation',
   confirm = true,
+  confirmationButton = 'Yes',
+  cancelButton = 'Cancel',
 ): Promise<void> {
   // wait for dialog to appear using waitFor
   const dialog = page.getByRole('dialog', { name: dialogTitle, exact: true });
   await dialog.waitFor({ state: 'visible', timeout: 3000 });
-  const button = confirm ? dialog.getByRole('button', { name: 'Yes' }) : dialog.getByRole('button', { name: 'Cancel' });
+  const button = confirm
+    ? dialog.getByRole('button', { name: confirmationButton })
+    : dialog.getByRole('button', { name: cancelButton });
   await button.click();
 }
 
@@ -179,9 +179,7 @@ export async function deletePodmanMachine(page: Page, machineVisibleName: string
     async () => {
       return await resourcesPodmanConnections.podmanMachineElement.isVisible();
     },
-    15_000,
-    1000,
-    false,
+    { timeout: 15000 },
   );
   if (await resourcesPodmanConnections.podmanMachineElement.isVisible()) {
     await playExpect(resourcesPodmanConnections.machineConnectionActions).toBeVisible({ timeout: 3000 });
@@ -192,10 +190,14 @@ export async function deletePodmanMachine(page: Page, machineVisibleName: string
       await playExpect(resourcesPodmanConnections.machineConnectionStatus).toHaveText('OFF', { timeout: 30_000 });
     }
     await playExpect(resourcesPodmanConnections.machineDeleteButton).toBeVisible({ timeout: 3000 });
-    await waitWhile(() => resourcesPodmanConnections.machineDeleteButton.isDisabled(), 10_000, 1000, true);
+    await waitWhile(() => resourcesPodmanConnections.machineDeleteButton.isDisabled(), { timeout: 10000 });
     await resourcesPodmanConnections.machineDeleteButton.click();
     await playExpect(resourcesPodmanConnections.podmanMachineElement).toBeHidden({ timeout: 30_000 });
   } else {
     console.log(`Podman machine [${machineVisibleName}] not present, skipping deletion.`);
   }
+}
+
+export function checkForFailedTest(result: TaskResult, runner: PodmanDesktopRunner): void {
+  if (result.errors && result.errors.length > 0) runner.setTestPassed(false);
 }

@@ -5,9 +5,9 @@ import CatalogExtension from './CatalogExtension.svelte';
 export let catalogExtensions: CatalogExtensionInfoUI[];
 </script>
 
-<div class="flex flex-col grow p-4">
+<div class="flex flex-col grow px-5 py-3">
   {#if catalogExtensions.length > 0}
-    <div class="pb-4">Available extensions</div>
+    <div class="pb-4 text-[var(--pd-content-header)]">Available extensions</div>
   {/if}
 
   <div class="flex flex-col w-full">
@@ -16,7 +16,7 @@ export let catalogExtensions: CatalogExtensionInfoUI[];
       role="region"
       aria-label="Catalog Extensions">
       {#each catalogExtensions as catalogExtension}
-        <CatalogExtension catalogExtensionUI="{catalogExtension}" />
+        <CatalogExtension catalogExtensionUI={catalogExtension} />
       {/each}
     </div>
   </div>

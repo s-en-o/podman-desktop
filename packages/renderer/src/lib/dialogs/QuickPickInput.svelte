@@ -40,16 +40,16 @@ const showInputCallback = (inputCallpackParameter: unknown) => {
   inputValue = options?.value;
   placeHolder = options?.placeHolder;
   title = options?.title;
-  currentId = options?.id || 0;
+  currentId = options?.id ?? 0;
   if (options?.prompt) {
     prompt = `${options.prompt} (${DEFAULT_PROMPT})`;
   } else {
     prompt = DEFAULT_PROMPT;
   }
   markdownDescription = options?.markdownDescription;
-  multiline = options?.multiline || false;
+  multiline = options?.multiline ?? false;
 
-  validationEnabled = options?.validate || false;
+  validationEnabled = options?.validate ?? false;
   display = true;
   tick()
     .then(() => {
@@ -70,19 +70,19 @@ const showQuickPickCallback = (quickpickParameter: unknown) => {
   mode = 'QuickPick';
   placeHolder = options?.placeHolder;
   title = options?.title;
-  currentId = options?.id || 0;
+  currentId = options?.id ?? 0;
   if (options?.prompt) {
     prompt = options.prompt;
   }
-  quickPickItems = (options?.items || []).map(item => {
+  quickPickItems = (options?.items ?? []).map(item => {
     if (typeof item === 'string') {
       return { value: item, description: '', detail: '', checkbox: false };
     } else {
       // if type is QuickPickItem use label field for the display
       return {
-        value: item.label || '',
-        description: item.description || '',
-        detail: item.detail || '',
+        value: item.label ?? '',
+        description: item.description ?? '',
+        detail: item.detail ?? '',
         checkbox: false,
       };
     }
@@ -286,13 +286,13 @@ function handleMousedown(e: MouseEvent) {
 }
 </script>
 
-<svelte:window on:keydown="{handleKeydown}" on:mousedown="{handleMousedown}" />
+<svelte:window on:keydown={handleKeydown} on:mousedown={handleMousedown} />
 
 {#if display}
-  <Modal on:close="{onClose}" name="{title}" top>
+  <Modal on:close={onClose} name={title} top>
     <div class="flex justify-center items-center mt-1">
       <div
-        bind:this="{outerDiv}"
+        bind:this={outerDiv}
         class="w-[700px] {mode === 'InputBox' ? 'h-fit' : ''} shadow-sm p-2 rounded shadow-zinc-700 text-sm">
         {#if title}
           <div
@@ -304,26 +304,26 @@ function handleMousedown(e: MouseEvent) {
         <div class="w-full flex flex-row">
           {#if multiline}
             <textarea
-              bind:this="{inputElement}"
-              on:input="{event => onInputChange(event)}"
-              bind:value="{inputValue}"
+              bind:this={inputElement}
+              on:input={event => onInputChange(event)}
+              bind:value={inputValue}
               class="px-1 w-full h-20 text-gray-400 bg-zinc-700 border {validationError
                 ? 'border-red-700'
                 : 'border-charcoal-600'} focus:outline-none"
-              placeholder="{placeHolder}"></textarea>
+              placeholder={placeHolder}></textarea>
           {:else}
             <input
-              bind:this="{inputElement}"
-              on:input="{event => onInputChange(event)}"
+              bind:this={inputElement}
+              on:input={event => onInputChange(event)}
               type="text"
-              bind:value="{inputValue}"
+              bind:value={inputValue}
               class="px-1 w-full text-gray-400 bg-zinc-700 border {validationError
                 ? 'border-red-700'
                 : 'border-charcoal-600'} focus:outline-none"
-              placeholder="{placeHolder}" />
+              placeholder={placeHolder} />
           {/if}
           {#if quickPickCanPickMany}
-            <Button on:click="{() => validateQuickPick()}" class="px-1">OK</Button>
+            <Button on:click={() => validateQuickPick()} class="px-1">OK</Button>
           {/if}
         </div>
 
@@ -334,7 +334,7 @@ function handleMousedown(e: MouseEvent) {
             <div class="relative text-gray-400 pt-2 px-1 h-7 overflow-y-auto">{prompt}</div>
             {#if markdownDescription && markdownDescription.length > 0}
               <div class="relative text-gray-400 pt-2 px-1 h-fit overflow-y-auto">
-                <Markdown>{markdownDescription}</Markdown>
+                <Markdown markdown={markdownDescription} />
               </div>
             {/if}
           {/if}
@@ -345,10 +345,10 @@ function handleMousedown(e: MouseEvent) {
                 ? 'bg-purple-500'
                 : 'hover:bg-charcoal-600'} ">
               {#if quickPickCanPickMany}
-                <Checkbox class="mx-1 my-auto" bind:checked="{item.checkbox}" />
+                <Checkbox class="mx-1 my-auto" bind:checked={item.checkbox} />
               {/if}
               <button
-                on:click="{() => clickQuickPickItem(item, i)}"
+                on:click={() => clickQuickPickItem(item, i)}
                 class="text-gray-400 text-left relative my-1 w-full {i === quickPickSelectedFilteredIndex
                   ? 'bg-purple-500'
                   : ''} px-1">

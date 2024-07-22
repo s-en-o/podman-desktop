@@ -16,7 +16,15 @@
  * SPDX-License-Identifier: Apache-2.0
  ***********************************************************************/
 
-import type { AuditRequestItems, CancellationToken, Logger } from '@podman-desktop/api';
+import type {
+  AuditRequestItems,
+  CancellationToken,
+  CliTool,
+  ExtensionContext,
+  Logger,
+  StatusBarItem,
+  TelemetryLogger,
+} from '@podman-desktop/api';
 import * as extensionApi from '@podman-desktop/api';
 import { ProgressLocation, window } from '@podman-desktop/api';
 
@@ -24,7 +32,9 @@ import { connectionAuditor, createCluster } from './create-cluster';
 import type { ImageInfo } from './image-handler';
 import { ImageHandler } from './image-handler';
 import { KindInstaller } from './kind-installer';
-import { detectKind, getKindPath } from './util';
+import { getKindBinaryInfo, getKindPath } from './util';
+
+const KIND_MARKDOWN = `Podman Desktop can help you run Kind-powered local Kubernetes clusters on a container engine, such as Podman.\n\nMore information: [Podman Desktop Documentation](https://podman-desktop.io/docs/kind)`;
 
 const API_KIND_INTERNAL_API_PORT = 6443;
 
@@ -46,7 +56,8 @@ const registeredKubernetesConnections: {
   disposable: extensionApi.Disposable;
 }[] = [];
 
-let kindCli: string | undefined;
+let kindCli: CliTool | undefined;
+let kindPath: string | undefined;
 
 const imageHandler = new ImageHandler();
 
@@ -58,8 +69,12 @@ async function registerProvider(
   const disposable = provider.setKubernetesProviderConnectionFactory(
     {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      create: (params: { [key: string]: any }, logger?: Logger, token?: CancellationToken) =>
-        createCluster(params, logger, kindCli, telemetryLogger, token),
+      create: (params: { [key: string]: any }, logger?: Logger, token?: CancellationToken) => {
+        if (kindPath) {
+          return createCluster(params, kindPath, telemetryLogger, logger, token);
+        }
+        return Promise.reject(new Error('Unable to create kind cluster. No kind cli detected'));
+      },
       creationDisplayName: 'Kind cluster',
     },
     {
@@ -110,7 +125,7 @@ async function updateClusters(
     return {
       name: clusterName,
       status,
-      apiPort: listeningPort?.PublicPort || 0,
+      apiPort: listeningPort?.PublicPort ?? 0,
       engineType: container.engineType,
       engineId: container.engineId,
       id: container.Id,
@@ -160,12 +175,14 @@ async function updateClusters(
           await extensionApi.containerEngine.stopContainer(cluster.engineId, cluster.id);
         },
         delete: async (logger): Promise<void> => {
-          const env = Object.assign({}, process.env);
+          const env = Object.assign({}, process.env) as { [key: string]: string };
           if (cluster.engineType === 'podman') {
             env['KIND_EXPERIMENTAL_PROVIDER'] = 'podman';
           }
-          env.PATH = getKindPath();
-          await extensionApi.process.exec(kindCli, ['delete', 'cluster', '--name', cluster.name], { env, logger });
+          env.PATH = getKindPath() ?? '';
+          if (kindPath) {
+            await extensionApi.process.exec(kindPath, ['delete', 'cluster', '--name', cluster.name], { env, logger });
+          }
         },
       };
       // create a new connection
@@ -296,7 +313,7 @@ export async function moveImage(
   image: unknown,
 ): Promise<void> {
   // as the command receive an "any" value we check that it contains an id and an engineId as they are mandatory
-  if (!(typeof image === 'object' && 'id' in image && 'engineId' in image)) {
+  if (!(kindCli && kindPath && image && typeof image === 'object' && 'id' in image && 'engineId' in image)) {
     throw new Error('Image selection not supported yet');
   }
 
@@ -304,7 +321,7 @@ export async function moveImage(
   imagesPushInProgressToKind.push(image.id as string);
   extensionApi.context.setValue('imagesPushInProgressToKind', imagesPushInProgressToKind);
   try {
-    await imageHandler.moveImage(image as ImageInfo, kindClusters, kindCli);
+    await imageHandler.moveImage(image as ImageInfo, kindClusters, kindPath);
   } finally {
     // Mark the task as completed and remove the image from the pushInProgressToKind list on context
     imagesPushInProgressToKind = imagesPushInProgressToKind.filter(id => id !== image.id);
@@ -316,37 +333,107 @@ export async function moveImage(
 export async function activate(extensionContext: extensionApi.ExtensionContext): Promise<void> {
   const telemetryLogger = extensionApi.env.createTelemetryLogger();
   const installer = new KindInstaller(extensionContext.storagePath, telemetryLogger);
-  kindCli = await detectKind(extensionContext.storagePath, installer);
 
-  if (!kindCli) {
-    if (await installer.isAvailable()) {
-      const statusBarItem = extensionApi.window.createStatusBarItem();
-      statusBarItem.text = 'Kind';
-      statusBarItem.tooltip = 'Kind not found on your system, click to download and install it';
-      statusBarItem.command = KIND_INSTALL_COMMAND;
-      statusBarItem.iconClass = 'fa fa-exclamation-triangle';
-      extensionContext.subscriptions.push(
-        extensionApi.commands.registerCommand(KIND_INSTALL_COMMAND, () =>
-          installer.performInstall().then(
-            async status => {
-              if (status) {
-                statusBarItem.dispose();
-                kindCli = await detectKind(extensionContext.storagePath, installer);
-                await createProvider(extensionContext, telemetryLogger);
-              }
-            },
-            (err: unknown) => window.showErrorMessage('Kind installation failed ' + err),
-          ),
-        ),
-        statusBarItem,
-      );
-      statusBarItem.show();
-    }
-  } else {
-    await createProvider(extensionContext, telemetryLogger);
+  let binary: { path: string; version: string } | undefined = undefined;
+  // let's try to get system-wide kind install first
+  try {
+    binary = await getKindBinaryInfo('kind');
+  } catch (err: unknown) {
+    console.error(err);
   }
+
+  // if not installed system-wide: let's try to check in the extension storage if kind is not available system-wide
+  if (!binary) {
+    try {
+      binary = await getKindBinaryInfo(installer.getInternalDestinationPath());
+    } catch (err: unknown) {
+      console.error(err);
+    }
+  }
+
+  // if the binary exists (either system-wide or in extension storage)
+  // we register it
+  if (binary) {
+    kindPath = binary.path;
+    kindCli = extensionApi.cli.createCliTool({
+      name: 'kind',
+      images: {
+        icon: './icon.png',
+      },
+      version: binary.version,
+      path: binary.path,
+      displayName: 'kind',
+      markdownDescription: KIND_MARKDOWN,
+    });
+  }
+
+  // if the CLI tool exists, let's create a provider
+  if (kindCli) {
+    await createProvider(extensionContext, telemetryLogger);
+    return;
+  }
+
+  // if we do not have anything installed, let's add it to the status bar
+  if (await installer.isAvailable()) {
+    const statusBarItem = extensionApi.window.createStatusBarItem();
+    statusBarItem.text = 'Kind';
+    statusBarItem.tooltip = 'Kind not found on your system, click to download and install it';
+    statusBarItem.command = KIND_INSTALL_COMMAND;
+    statusBarItem.iconClass = 'fa fa-exclamation-triangle';
+    extensionContext.subscriptions.push(
+      extensionApi.commands.registerCommand(KIND_INSTALL_COMMAND, () =>
+        kindInstall(installer, statusBarItem, extensionContext, telemetryLogger),
+      ),
+      statusBarItem,
+    );
+    statusBarItem.show();
+  }
+}
+
+/**
+ * Install the kind binary in the extension storage, and optionally system-wide
+ * @param installer
+ * @param statusBarItem
+ * @param extensionContext
+ * @param telemetryLogger
+ */
+async function kindInstall(
+  installer: KindInstaller,
+  statusBarItem: StatusBarItem,
+  extensionContext: ExtensionContext,
+  telemetryLogger: TelemetryLogger,
+): Promise<void> {
+  if (kindCli || kindPath) throw new Error('kind cli is already registered');
+
+  let path: string;
+  try {
+    path = await installer.performInstall();
+  } catch (err: unknown) {
+    window.showErrorMessage('Kind installation failed ' + err).catch((error: unknown) => {
+      console.error('show error went wrong', error);
+    });
+    return;
+  }
+
+  statusBarItem.dispose();
+  const binaryInfo = await getKindBinaryInfo(path);
+
+  kindPath = path;
+  kindCli = extensionApi.cli.createCliTool({
+    name: 'kind',
+    images: {
+      icon: './icon.png',
+    },
+    version: binaryInfo.version,
+    path: binaryInfo.path,
+    displayName: 'kind',
+    markdownDescription: KIND_MARKDOWN,
+  });
+
+  await createProvider(extensionContext, telemetryLogger);
 }
 
 export function deactivate(): void {
   console.log('stopping kind extension');
+  kindCli?.dispose();
 }

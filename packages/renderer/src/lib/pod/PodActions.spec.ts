@@ -20,7 +20,7 @@ import '@testing-library/jest-dom/vitest';
 
 import type { ContainerInfo, Port } from '@podman-desktop/api';
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { beforeEach, expect, test, vi } from 'vitest';
 
 import type { V1Route } from '/@api/openshift-types';
 
@@ -49,7 +49,14 @@ const showMessageBoxMock = vi.fn();
 const kubernetesGetCurrentNamespaceMock = vi.fn();
 const kubernetesReadNamespacedPodMock = vi.fn();
 
+class ResizeObserver {
+  observe = vi.fn();
+  disconnect = vi.fn();
+  unobserve = vi.fn();
+}
+
 beforeEach(() => {
+  (window as any).ResizeObserver = ResizeObserver;
   (window as any).showMessageBox = showMessageBoxMock;
   (window as any).kubernetesDeletePod = vi.fn();
   (window as any).listContainers = listContainersMock;
@@ -79,8 +86,7 @@ beforeEach(() => {
 test('Expect no error and status starting pod', async () => {
   listContainersMock.mockResolvedValue([]);
 
-  const { component } = render(PodActions, { pod: podmanPod });
-  component.$on('update', updateMock);
+  render(PodActions, { pod: podmanPod, onUpdate: updateMock });
 
   // click on start button
   const startButton = screen.getByRole('button', { name: 'Start Pod' });
@@ -94,8 +100,7 @@ test('Expect no error and status starting pod', async () => {
 test('Expect no error and status stopping pod', async () => {
   listContainersMock.mockResolvedValue([]);
 
-  const { component } = render(PodActions, { pod: podmanPod });
-  component.$on('update', updateMock);
+  render(PodActions, { pod: podmanPod, onUpdate: updateMock });
 
   // click on stop button
   const stopButton = screen.getByRole('button', { name: 'Stop Pod' });
@@ -109,8 +114,7 @@ test('Expect no error and status stopping pod', async () => {
 test('Expect no error and status restarting pod', async () => {
   listContainersMock.mockResolvedValue([]);
 
-  const { component } = render(PodActions, { pod: podmanPod });
-  component.$on('update', updateMock);
+  render(PodActions, { pod: podmanPod, onUpdate: updateMock });
 
   // click on restart button
   const restartButton = screen.getByRole('button', { name: 'Restart Pod' });
@@ -126,9 +130,7 @@ test('Expect no error and status deleting pod', async () => {
   showMessageBoxMock.mockResolvedValue({ response: 0 });
   listContainersMock.mockResolvedValue([]);
 
-  const { component } = render(PodActions, { pod: podmanPod });
-  component.$on('update', updateMock);
-
+  render(PodActions, { pod: podmanPod, onUpdate: updateMock });
   // click on delete button
   const deleteButton = screen.getByRole('button', { name: 'Delete Pod' });
   await fireEvent.click(deleteButton);
@@ -187,20 +189,4 @@ test('Expect kubernetes routes kebab menu to be displayed', async () => {
 
   const routesDropDownMenu = await screen.findByTitle('Drop Down Menu Items');
   expect(routesDropDownMenu).toBeVisible();
-});
-
-describe('restart action', () => {
-  test('Expect podman pod to have restart action', async () => {
-    render(PodActions, { pod: podmanPod });
-
-    const restartPodButton = await screen.findByRole('button', { name: `Restart Pod` });
-    expect(restartPodButton).toBeVisible();
-  });
-
-  test('Expect kubernetes pod not to have restart action', async () => {
-    render(PodActions, { pod: kubernetesPod });
-
-    const restartPodButton = screen.queryByRole('button', { name: `Restart Pod` });
-    expect(restartPodButton).toBeNull();
-  });
 });

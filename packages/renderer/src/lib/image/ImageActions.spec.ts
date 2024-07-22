@@ -18,7 +18,7 @@
 
 import '@testing-library/jest-dom/vitest';
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { router } from 'tinro';
 import { beforeAll, expect, test, vi } from 'vitest';
@@ -37,8 +37,14 @@ vi.mock('./image-utils', () => {
   };
 });
 
+class ResizeObserver {
+  observe = vi.fn();
+  disconnect = vi.fn();
+  unobserve = vi.fn();
+}
 beforeAll(() => {
   (window as any).showMessageBox = showMessageBoxMock;
+  (window as any).ResizeObserver = ResizeObserver;
 
   (window as any).getContributedMenus = getContributedMenusMock;
   (window as any).hasAuthconfigForImage = vi.fn();
@@ -150,12 +156,18 @@ test('Expect no dropdown when several contributions and dropdownMenu mode on', a
 
   await fireEvent.click(screen.getByLabelText('kebab menu'));
 
-  await waitFor(() => {
+  await waitFor(async () => {
     const button = screen.getByTitle('dummy-contrib');
     expect(button).toBeDefined();
-    expect(button.firstChild?.nodeName.toLowerCase()).toBe('svg');
-    expect(button.lastChild?.nodeName.toLowerCase()).toBe('span');
-    expect(button.lastChild?.textContent).toBe('dummy-contrib');
+    const img = within(button).getByRole('img', { hidden: true });
+    expect(img).toBeDefined();
+    expect(img.nodeName.toLowerCase()).toBe('svg');
+
+    const button2 = screen.getByTitle('dummy-contrib-2');
+    expect(button2).toBeDefined();
+    const img2 = within(button2).getByRole('img', { hidden: true });
+    expect(img2).toBeDefined();
+    expect(img2.nodeName.toLowerCase()).toBe('svg');
   });
 });
 

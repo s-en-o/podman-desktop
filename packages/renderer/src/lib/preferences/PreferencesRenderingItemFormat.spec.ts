@@ -24,6 +24,7 @@ import '@testing-library/jest-dom/vitest';
 
 import { render, screen } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
+import { tick } from 'svelte';
 import { beforeAll, expect, test, vi } from 'vitest';
 
 import { getInitialValue } from '/@/lib/preferences/Util';
@@ -41,9 +42,7 @@ async function awaitRender(record: IConfigurationPropertyRecordedSchema, customP
     initialValue: getInitialValue(record),
     ...customProperties,
   });
-  while (result.component.$$.ctx[4] === undefined) {
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
+  await tick();
 }
 
 test('Expect to see checkbox enabled', async () => {
@@ -161,8 +160,26 @@ test('Expect a fileinput when record is type string and format file', async () =
   expect(readOnlyInput).toBeInTheDocument();
   expect(readOnlyInput instanceof HTMLInputElement).toBe(true);
   expect((readOnlyInput as HTMLInputElement).placeholder).toBe(record.placeholder);
+  expect((readOnlyInput as HTMLInputElement).readOnly).toBeTruthy();
   const input = screen.getByLabelText('browse');
   expect(input).toBeInTheDocument();
+});
+
+test('Expect an editable text fileinput when record is type string and format file', async () => {
+  const record: IConfigurationPropertyRecordedSchema = {
+    title: 'record',
+    parentId: 'parent.record',
+    placeholder: 'Example: text',
+    description: 'record-description',
+    type: 'string',
+    format: 'file',
+    readonly: false,
+  };
+  await awaitRender(record, {});
+  const writeInput = screen.getByLabelText('record-description');
+  expect(writeInput).toBeInTheDocument();
+  expect(writeInput instanceof HTMLInputElement).toBe(true);
+  expect((writeInput as HTMLInputElement).readOnly).toBeFalsy();
 });
 
 test('Expect a fileinput when record is type string and format folder', async () => {
